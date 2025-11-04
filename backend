@@ -1,0 +1,308 @@
+package com.example.inventory;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.*;
+
+import javax.persistence.*;
+import javax.validation.Valid;
+import javax.validation.constraints.Min;
+import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.NotNull;
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+
+@SpringBootApplication
+@EntityScan(basePackageClasses = InventoryBackendSingleFile.InventoryItem.class)
+public class InventoryBackendSingleFile {
+    public static void main(String[] args) {
+        SpringApplication.run(InventoryBackendSingleFile.class, args);
+    }
+
+    @Entity
+    @Table(name = "inventory_items", uniqueConstraints = {@UniqueConstraint(columnNames = {"sku"})})
+    @EntityListeners(AuditingEntityListener.class)
+    public static class InventoryItem {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @NotBlank
+        private String name;
+
+        @NotBlank
+        private String sku; 
+
+        private String category;
+
+        @NotNull
+        @Min(0)
+        private Integer quantity = 0;
+
+        private String supplier;
+
+        @NotNull
+        @Min(0)
+        private Double price = 0.0;
+
+        private String location;
+
+        @CreatedDate
+        @Column(updatable = false)
+        private Instant createdAt;
+
+        @LastModifiedDate
+        private Instant updatedAt;
+
+        private String deletedBy; 
+        private Instant deletedAt;
+
+      
+        public Long getId() { return id; }
+        public void setId(Long id) { this.id = id; }
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getSku() { return sku; }
+        public void setSku(String sku) { this.sku = sku; }
+        public String getCategory() { return category; }
+        public void setCategory(String category) { this.category = category; }
+        public Integer getQuantity() { return quantity; }
+        public void setQuantity(Integer quantity) { this.quantity = quantity; }
+        public String getSupplier() { return supplier; }
+        public void setSupplier(String supplier) { this.supplier = supplier; }
+        public Double getPrice() { return price; }
+        public void setPrice(Double price) { this.price = price; }
+        public String getLocation() { return location; }
+        public void setLocation(String location) { this.location = location; }
+        public Instant getCreatedAt() { return createdAt; }
+        public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+        public Instant getUpdatedAt() { return updatedAt; }
+        public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+        public String getDeletedBy() { return deletedBy; }
+        public void setDeletedBy(String deletedBy) { this.deletedBy = deletedBy; }
+        public Instant getDeletedAt() { return deletedAt; }
+        public void setDeletedAt(Instant deletedAt) { this.deletedAt = deletedAt; }
+    }
+
+    public interface InventoryRepository extends JpaRepository<InventoryItem, Long> {
+        Optional<InventoryItem> findBySku(String sku);
+        boolean existsBySku(String sku);
+        List<InventoryItem> findByDeletedAtIsNull();
+    }
+
+    @org.springframework.stereotype.Service
+    public static class InventoryService {
+        private final InventoryRepository repo;
+
+        public InventoryService(InventoryRepository repo) {
+            this.repo = repo;
+        }
+
+        public InventoryItem addItem(InventoryItem item) {
+            // prevent duplicate SKU
+            if (repo.existsBySku(item.getSku())) {
+                throw new DuplicateResourceException("SKU already exists: " + item.getSku());
+            }
+            return repo.save(item);
+        }
+
+        public InventoryItem updateItem(Long id, InventoryItem updated) {
+            return repo.findById(id).map(existing -> {
+                // update mutable fields
+                existing.setName(updated.getName());
+                existing.setCategory(updated.getCategory());
+                existing.setQuantity(updated.getQuantity());
+                existing.setSupplier(updated.getSupplier());
+                existing.setPrice(updated.getPrice());
+                existing.setLocation(updated.getLocation());
+                // SKU update: ensure uniqueness if changed
+                if (!existing.getSku().equals(updated.getSku())) {
+                    if (repo.existsBySku(updated.getSku())) {
+                        throw new DuplicateResourceException("SKU already exists: " + updated.getSku());
+                    }
+                    existing.setSku(updated.getSku());
+                }
+                return repo.save(existing);
+            }).orElseThrow(() -> new ResourceNotFoundException("Item not found with id " + id));
+        }
+
+        public void deleteItem(Long id, String deletedBy) {
+            InventoryItem item = repo.findById(id).orElseThrow(() -> new ResourceNotFoundException("Item not found with id " + id));
+           
+            item.setDeletedAt(Instant.now());
+            item.setDeletedBy(deletedBy);
+            repo.save(item);
+        }
+
+        public InventoryItem getItem(Long id) {
+            return repo.findById(id).orElseThrow(() -> new ResourceNotFoundException("Item not found with id " + id));
+        }
+
+        public List<InventoryItem> listActiveItems() {
+            // simplest: return all (filter deleted in memory) or add query
+            return repo.findAll().stream().filter(i -> i.getDeletedAt() == null).toList();
+        }
+    }
+
+    @RestController
+    @RequestMapping("/api/inventory")
+    @Validated
+    public static class InventoryController {
+        private final InventoryService service;
+
+        public InventoryController(InventoryService service) {
+            this.service = service;
+        }
+
+        public static record CreateItemDTO(@NotBlank String name,
+                                           @NotBlank String sku,
+                                           String category,
+                                           @NotNull @Min(0) Integer quantity,
+                                           String supplier,
+                                           @NotNull @Min(0) Double price,
+                                           String location) {
+        }
+
+        public static record UpdateItemDTO(@NotBlank String name,
+                                           @NotBlank String sku,
+                                           String category,
+                                           @NotNull @Min(0) Integer quantity,
+                                           String supplier,
+                                           @NotNull @Min(0) Double price,
+                                           String location) {
+        }
+
+        @PostMapping
+        public ResponseEntity<InventoryItem> addItem(@Valid @RequestBody CreateItemDTO dto) {
+            InventoryItem i = new InventoryItem();
+            i.setName(dto.name());
+            i.setSku(dto.sku());
+            i.setCategory(dto.category());
+            i.setQuantity(dto.quantity());
+            i.setSupplier(dto.supplier());
+            i.setPrice(dto.price());
+            i.setLocation(dto.location());
+            InventoryItem saved = service.addItem(i);
+            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+        }
+
+        @PutMapping("/{id}")
+        public ResponseEntity<InventoryItem> updateItem(@PathVariable Long id, @Valid @RequestBody UpdateItemDTO dto) {
+            InventoryItem u = new InventoryItem();
+            u.setName(dto.name());
+            u.setSku(dto.sku());
+            u.setCategory(dto.category());
+            u.setQuantity(dto.quantity());
+            u.setSupplier(dto.supplier());
+            u.setPrice(dto.price());
+            u.setLocation(dto.location());
+            InventoryItem updated = service.updateItem(id, u);
+            return ResponseEntity.ok(updated);
+        }
+
+        @DeleteMapping("/{id}")
+        public ResponseEntity<Void> deleteItem(@PathVariable Long id, @RequestHeader(value = "X-USER", defaultValue = "admin") String username) {
+            service.deleteItem(id, username);
+            return ResponseEntity.noContent().build();
+        }
+
+        @GetMapping("/{id}")
+        public ResponseEntity<InventoryItem> getItem(@PathVariable Long id) {
+            return ResponseEntity.ok(service.getItem(id));
+        }
+
+        @GetMapping
+        public ResponseEntity<List<InventoryItem>> listItems() {
+            return ResponseEntity.ok(service.listActiveItems());
+        }
+    }
+
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public static class ResourceNotFoundException extends RuntimeException {
+        public ResourceNotFoundException(String msg) { super(msg); }
+    }
+
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public static class DuplicateResourceException extends RuntimeException {
+        public DuplicateResourceException(String msg) { super(msg); }
+    }
+
+    @ControllerAdvice
+    public static class GlobalExceptionHandler {
+        @ExceptionHandler(ResourceNotFoundException.class)
+        public ResponseEntity<String> handleNotFound(ResourceNotFoundException ex) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
+        }
+
+        @ExceptionHandler(DuplicateResourceException.class)
+        public ResponseEntity<String> handleDuplicate(DuplicateResourceException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
+        }
+
+        @ExceptionHandler(MethodArgumentNotValidException.class)
+        public ResponseEntity<String> handleValidation(MethodArgumentNotValidException ex) {
+            String msg = ex.getBindingResult().getFieldErrors().stream()
+                    .map(e -> e.getField() + ": " + e.getDefaultMessage())
+                    .reduce((a, b) -> a + "; " + b).orElse("validation failed");
+            return ResponseEntity.badRequest().body(msg);
+        }
+
+        @ExceptionHandler(Exception.class)
+        public ResponseEntity<String> handleAll(Exception ex) {
+            ex.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ex.getMessage());
+        }
+    }
+
+    @Configuration
+    @EnableWebSecurity
+    @EnableGlobalMethodSecurity(prePostEnabled = true)
+    public static class SecurityConfig {
+        @Bean
+        public InMemoryUserDetailsManager userDetailsService(PasswordEncoder encoder) {
+            var admin = User.withUsername("admin").password(encoder.encode("adminpass")).roles("ADMIN").build();
+            var user = User.withUsername("user").password(encoder.encode("userpass")).roles("USER").build();
+            return new InMemoryUserDetailsManager(admin, user);
+        }
+
+        @Bean
+        public PasswordEncoder passwordEncoder() {
+            return new BCryptPasswordEncoder();
+        }
+
+        @Bean
+        public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+            http
+                    .csrf().disable()
+                    .authorizeRequests()
+                    .antMatchers("/h2-console/**").permitAll()
+                    .antMatchers("/api/inventory/**").authenticated()
+                    .and()
+                    .httpBasic();
+
+            http.headers().frameOptions().sameOrigin();
+            return http.build();
+        }
+    }
+}
